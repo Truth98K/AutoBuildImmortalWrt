@@ -1,0 +1,94 @@
+name: build-x86-64-istoreos-latest
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: '请输入要编译的固件大小 单位(MB)'
+        required: true
+        default: '1024'
+      include_docker:
+        description: '是否编译 Docker 插件'
+        required: true
+        default: 'yes'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+      enable_pppoe:
+        description: '是否配置PPPoE拨号信息?'
+        required: true
+        default: 'no'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+      pppoe_account:
+        description: '宽带账号 (若启用PPPoE)'
+        required: false
+      pppoe_password:
+        description: '宽带密码 (若启用PPPoE)'
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set executable permissions
+        run: chmod +x ${{ github.workspace }}/istoreos/build.sh
+
+      - name: Validate PPPoE Inputs
+        run: |
+          if [[ "${{ github.event.inputs.enable_pppoe }}" == "yes" ]]; then
+            if [[ -z "${{ github.event.inputs.pppoe_account }}" || -z "${{ github.event.inputs.pppoe_password }}" ]]; then
+              echo "Error: PPPoE account and password must be provided when PPPoE is enabled!"
+              exit 1
+            fi
+          fi
+
+      - name: Build iStoreOS Firmware
+        run: |
+          profiles="${{ github.event.inputs.profile }}"
+          include_docker="${{ github.event.inputs.include_docker }}"
+          IFS=',' read -r -a profile_array <<< "$profiles"
+          
+          for profile in "${profile_array[@]}"; do
+            echo "Building for profile: $profile"
+            
+            docker run --rm -i \
+              --user root \
+              -v "${{ github.workspace }}/bin:/home/build/istoreos/bin" \
+              -v "${{ github.workspace }}/files:/home/build/istoreos/files" \
+              -v "${{ github.workspace }}/istoreos/.config:/home/build/istoreos/.config" \
+              -v "${{ github.workspace }}/istoreos/build.sh:/home/build/istoreos/build.sh" \
+              -e PROFILE=$profile \
+              -e INCLUDE_DOCKER=$include_docker \
+              -e ENABLE_PPPOE=${{ github.event.inputs.enable_pppoe }} \
+              -e PPPOE_ACCOUNT=${{ github.event.inputs.pppoe_account }} \
+              -e PPPOE_PASSWORD=${{ github.event.inputs.pppoe_password }} \
+              istoreos/imagebuilder:x86-64-latest /bin/bash /home/build/istoreos/build.sh
+          done
+
+      - name: Create info file
+        run: |
+          echo "" > ${{ github.workspace }}/info.md
+          if [ "${{ github.event.inputs.include_docker }}" == "yes" ]; then
+            echo "#### 默认带docker" >> ${{ github.workspace }}/info.md
+          else
+            echo "NO docker" >> ${{ github.workspace }}/info.md
+          fi
+
+      - name: Upload iStoreOS as release assets
+        uses: softprops/action-gh-release@v2.2.1
+        with:
+          tag_name: Autobuild-x86-64-istoreos
+          body_path: ${{ github.workspace }}/info.md
+          files: |
+            ${{ github.workspace }}/bin/targets/x86/64/*squashfs-combined-efi.img.gz
+          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
